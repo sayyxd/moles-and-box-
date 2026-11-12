@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AtomMotion — Molecular Dynamics Sandbox</title>
+<style>
+:root{--bg:#0a0f1e;--panel:rgba(16,22,40,.88);--fg:#e8edf8;--mut:#8b97b5;--acc:#4cc9f0;--line:rgba(255,255,255,.12);--btn:rgba(255,255,255,.08);
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){--bg:#eef2f9;--panel:rgba(255,255,255,.9);--fg:#16203a;--mut:#5b6785;--acc:#0a7cb8;--line:rgba(0,0,0,.14);--btn:rgba(0,0,0,.06)}}
+:root[data-theme="light"]{--bg:#eef2f9;--panel:rgba(255,255,255,.9);--fg:#16203a;--mut:#5b6785;--acc:#0a7cb8;--line:rgba(0,0,0,.14);--btn:rgba(0,0,0,.06)}
+:root[data-theme="dark"]{--bg:#0a0f1e}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html,body{height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--fg);font:13px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+#c{position:fixed;inset:0;width:100%;height:100%;touch-action:none;cursor:grab}
+#c:active{cursor:grabbing}
+#panel{position:fixed;top:calc(env(safe-area-inset-top,0px) + 10px);right:10px;width:290px;max-height:calc(100% - 20px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));overflow-y:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;backdrop-filter:blur(8px)}
+h1{margin:0;font-size:18px;letter-spacing:.3px}h1 b{color:var(--acc)}
+.sub{color:var(--mut);font-size:11px;margin-bottom:10px}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px}
+.stat{background:var(--btn);border-radius:8px;padding:5px 8px}.stat span{display:block;color:var(--mut);font-size:10px;text-transform:uppercase}.stat b{font-variant-numeric:tabular-nums;font-size:14px}
+.row{display:flex;gap:6px;margin:6px 0;flex-wrap:wrap}
+button{flex:1;background:var(--btn);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 6px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--acc)}button.on{background:var(--acc);color:#04121c;border-color:var(--acc)}
+label.s{display:flex;justify-content:space-between;color:var(--mut);margin-top:8px}label.s b{color:var(--fg);font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--acc);margin:2px 0}
+.chk{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px}.chk label{display:flex;gap:5px;align-items:center;cursor:pointer}
+#hist{width:100%;height:80px;background:var(--btn);border-radius:8px;margin-top:8px;display:block}
+.hint{color:var(--mut);font-size:11px;margin-top:8px}
+@media (max-width:640px){#panel{top:auto;bottom:calc(env(safe-area-inset-bottom,0px) + 8px);left:8px;right:8px;width:auto;max-height:44%}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="panel">
+  <h1>Atom<b>Motion</b></h1>
+  <div class="sub">Lennard-Jones molecular dynamics · reduced units</div>
+  <div class="stats">
+    <div class="stat"><span>Temperature</span><b id="sT">–</b></div>
+    <div class="stat"><span>Pressure</span><b id="sP">–</b></div>
+    <div class="stat"><span>Kinetic / atom</span><b id="sK">–</b></div>
+    <div class="stat"><span>Potential / atom</span><b id="sU">–</b></div>
+  </div>
+  <div class="row"><button id="pSolid">Solid</button><button id="pLiq">Liquid</button><button id="pGas">Gas</button></div>
+  <label class="s">Atoms <b id="vn"></b></label><input id="n" type="range" min="20" max="400" step="4" value="216">
+  <label class="s">Target temperature <b id="vt"></b></label><input id="t" type="range" min="0.05" max="5" step="0.05" value="0.8">
+  <label class="s">Box size <b id="vb"></b></label><input id="box" type="range" min="5" max="30" step="0.1" value="7.5">
+  <label class="s">Gravity <b id="vg"></b></label><input id="g" type="range" min="0" max="1" step="0.02" value="0">
+  <label class="s">Sim speed <b id="vs"></b></label><input id="sp" type="range" min="1" max="10" step="1" value="4">
+  <div class="chk">
+    <label><input type="checkbox" id="thermo" checked>Thermostat</label>
+    <label><input type="checkbox" id="bonds" checked>Bonds</label>
+    <label><input type="checkbox" id="rot">Auto-rotate</label>
+  </div>
+  <div class="row"><button id="pause">Pause</button><button id="heat">Heat pulse</button><button id="cool">Quench</button><button id="reset">Reset</button></div>
+  <canvas id="hist" width="560" height="160"></canvas>
+  <div class="hint">Speed distribution (bars) vs. Maxwell–Boltzmann (line). Drag to orbit · scroll or pinch to zoom · click an atom to blast its neighbours. Untick Thermostat for free dynamics.</div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const MAXN=400, DT=0.004, RC2=6.25, SHIFT=4*(Math.pow(6.25,-6)-Math.pow(6.25,-3));
+let N=216, L=7.5, paused=false;
+let pos=new Float32Array(MAXN*3), vel=new Float32Array(MAXN*3), frc=new Float32Array(MAXN*3);
+let U=0, imp=0, simT=0, pressure=0, measT=0.8;
+
+// ---------- three.js scene ----------
+const cv=$('c');
+const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(45,1,0.1,500);
+scene.add(new THREE.HemisphereLight(0xffffff,0x334466,0.75));
+const dl=new THREE.DirectionalLight(0xffffff,0.9);dl.position.set(5,10,7);scene.add(dl);
+const mesh=new THREE.InstancedMesh(new THREE.SphereGeometry(0.5,16,12),new THREE.MeshPhongMaterial({shininess:70}),MAXN);
+mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(mesh);
+const boxLines=new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1,1,1)),new THREE.LineBasicMaterial({color:0x4cc9f0}));
+scene.add(boxLines);
+const MAXB=2500, bpos=new Float32Array(MAXB*6);
+const bgeo=new THREE.BufferGeometry();bgeo.setAttribute('position',new THREE.BufferAttribute(bpos,3));bgeo.setDrawRange(0,0);
+const bondLines=new THREE.LineSegments(bgeo,new THREE.LineBasicMaterial({color:0x9aa7c7,transparent:true,opacity:.55}));
+bondLines.frustumCulled=false;scene.add(bondLines);
+
+function applyTheme(){const bg=getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();scene.background=new THREE.Color(bg);const acc=getComputedStyle(document.documentElement).getPropertyValue('--acc').trim();boxLines.material.color.set(acc)}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',applyTheme);applyTheme();
+
+let th=0.7, ph=1.15, dist=18;
+function resize(){const w=innerWidth,h=innerHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix()}
+addEventListener('resize',resize);resize();
+function placeCam(){camera.position.set(dist*Math.sin(ph)*Math.sin(th),dist*Math.cos(ph),dist*Math.sin(ph)*Math.cos(th));camera.lookAt(0,0,0)}
+
+// ---------- simulation ----------
+function gauss(){let u=0,v=0;while(!u)u=Math.random();v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(6.2832*v)}
+function rescaleTo(T){let ke=0;for(let i=0;i<N*3;i++)ke+=vel[i]*vel[i];ke*=.5;const cur=2*ke/(3*N)||1,s=Math.sqrt(T/cur);for(let i=0;i<N*3;i++)vel[i]*=s}
+function reset(){
+  N=+$('n').value;L=+$('box').value;
+  const n=Math.ceil(Math.cbrt(N)),span=L-1,s=span/n;let k=0;
+  const idx=[];for(let i=0;i<n;i++)for(let j=0;j<n;j++)for(let m=0;m<n;m++)idx.push([i,j,m]);
+  for(let i=idx.length-1;i>0;i--){const j=(Math.random()*(i+1))|0;[idx[i],idx[j]]=[idx[j],idx[i]]}
+  for(k=0;k<N;k++){const[a,b,c]=idx[k];pos[3*k]=-span/2+(a+.5)*s;pos[3*k+1]=-span/2+(b+.5)*s;pos[3*k+2]=-span/2+(c+.5)*s}
+  const T0=+$('t').value;let cm=[0,0,0];
+  for(let i=0;i<N;i++)for(let d=0;d<3;d++){vel[3*i+d]=gauss();cm[d]+=vel[3*i+d]}
+  for(let i=0;i<N;i++)for(let d=0;d<3;d++)vel[3*i+d]-=cm[d]/N;
+  rescaleTo(T0);imp=0;simT=0;forces();labels();fit();
+}
+function forces(){
+  frc.fill(0,0,N*3);U=0;const g=+$('g').value;
+  for(let i=0;i<N;i++){
+    const xi=pos[3*i],yi=pos[3*i+1],zi=pos[3*i+2];let fx=0,fy=0,fz=0;
+    for(let j=i+1;j<N;j++){
+      const dx=xi-pos[3*j],dy=yi-pos[3*j+1],dz=zi-pos[3*j+2];let r2=dx*dx+dy*dy+dz*dz;
+      if(r2<RC2){if(r2<.64)r2=.64;const i2=1/r2,s6=i2*i2*i2,f=24*(2*s6*s6-s6)*i2;
+        fx+=f*dx;fy+=f*dy;fz+=f*dz;frc[3*j]-=f*dx;frc[3*j+1]-=f*dy;frc[3*j+2]-=f*dz;U+=4*(s6*s6-s6)-SHIFT}
+    }
+    frc[3*i]+=fx;frc[3*i+1]+=fy;frc[3*i+2]+=fz-0;frc[3*i+1]-=g;
+  }
+}
+function step(){
+  const h=L/2-.5;
+  for(let i=0;i<N*3;i++){vel[i]+=.5*DT*frc[i];pos[i]+=DT*vel[i]}
+  for(let i=0;i<N*3;i++){
+    if(pos[i]>h){pos[i]=2*h-pos[i];imp+=2*Math.abs(vel[i]);vel[i]=-Math.abs(vel[i])}
+    else if(pos[i]<-h){pos[i]=-2*h-pos[i];imp+=2*Math.abs(vel[i]);vel[i]=Math.abs(vel[i])}
+  }
+  forces();
+  for(let i=0;i<N*3;i++)vel[i]+=.5*DT*frc[i];
+  if($('thermo').checked){let ke=0;for(let i=0;i<N*3;i++)ke+=vel[i]*vel[i];const T=ke/(3*N)||1e-6;
+    let lam=Math.sqrt(1+.03*(+$('t').value/T-1));lam=Math.min(1.05,Math.max(.95,lam));for(let i=0;i<N*3;i++)vel[i]*=lam}
+  simT+=DT;
+}
+function fit(){dist=Math.max(10,(L)*2.3)}
+
+// ---------- rendering ----------
+const dummy=new THREE.Object3D(),col=new THREE.Color();
+function draw(){
+  let ke=0;const sp=new Float32Array(N);
+  for(let i=0;i<N;i++){const s=Math.hypot(vel[3*i],vel[3*i+1],vel[3*i+2]);sp[i]=s;ke+=s*s}
+  ke*=.5;measT=2*ke/(3*N);
+  const vmax=2.6*Math.sqrt(Math.max(measT,.25));
+  for(let i=0;i<N;i++){
+    dummy.position.set(pos[3*i],pos[3*i+1],pos[3*i+2]);dummy.updateMatrix();mesh.setMatrixAt(i,dummy.matrix);
+    col.setHSL(.62-.62*Math.min(sp[i]/vmax,1),.9,.55);mesh.setColorAt(i,col);
+  }
+  mesh.count=N;mesh.instanceMatrix.needsUpdate=true;mesh.instanceColor.needsUpdate=true;
+  boxLines.scale.set(L,L,L);
+  if($('bonds').checked){let b=0;
+    for(let i=0;i<N&&b<MAXB;i++)for(let j=i+1;j<N&&b<MAXB;j++){
+      const dx=pos[3*i]-pos[3*j],dy=pos[3*i+1]-pos[3*j+1],dz=pos[3*i+2]-pos[3*j+2];
+      if(dx*dx+dy*dy+dz*dz<1.5){const o=b*6;bpos[o]=pos[3*i];bpos[o+1]=pos[3*i+1];bpos[o+2]=pos[3*i+2];bpos[o+3]=pos[3*j];bpos[o+4]=pos[3*j+1];bpos[o+5]=pos[3*j+2];b++}}
+    bgeo.setDrawRange(0,b*2);bgeo.attributes.position.needsUpdate=true;bondLines.visible=true;
+  }else bondLines.visible=false;
+  if($('rot').checked)th+=.004;
+  placeCam();renderer.render(scene,camera);
+  return{sp,ke};
+}
+const hc=$('hist'),hx=hc.getContext('2d');
+function drawHist(sp){
+  const W=hc.width,H=hc.height,B=28,VM=5,bw=VM/B,bins=new Array(B).fill(0);
+  for(let i=0;i<N;i++){const k=Math.min(B-1,(sp[i]/bw)|0);bins[k]++}
+  hx.clearRect(0,0,W,H);const cs=getComputedStyle(document.documentElement);
+  const f=v=>Math.sqrt(2/Math.PI)*v*v*Math.exp(-v*v/(2*measT))/Math.pow(measT,1.5);
+  let mx=.01;for(let k=0;k<B;k++){mx=Math.max(mx,bins[k]/N/bw,f((k+.5)*bw))}
+  hx.fillStyle=cs.getPropertyValue('--acc').trim();hx.globalAlpha=.55;
+  for(let k=0;k<B;k++){const h=bins[k]/N/bw/mx*(H-12);hx.fillRect(k*W/B+1,H-h,W/B-2,h)}
+  hx.globalAlpha=1;hx.strokeStyle=cs.getPropertyValue('--fg').trim();hx.lineWidth=2;hx.beginPath();
+  for(let x=0;x<=W;x+=4){const v=x/W*VM,y=H-f(v)/mx*(H-12);x?hx.lineTo(x,y):hx.moveTo(x,y)}hx.stroke();
+}
+// ---------- UI ----------
+function labels(){$('vn').textContent=N;$('vt').textContent=(+$('t').value).toFixed(2);$('vb').textContent=L.toFixed(1)+' σ';$('vg').textContent=(+$('g').value).toFixed(2);$('vs').textContent=$('sp').value+'×'}
+function preset(n,rho,T){$('n').value=n;$('t').value=T;$('box').value=(Math.cbrt(n/rho)+1).toFixed(1);reset()}
+$('pSolid').onclick=()=>preset(216,.95,.12);
+$('pLiq').onclick=()=>preset(216,.75,.8);
+$('pGas').onclick=()=>preset(150,.06,2.2);
+$('reset').onclick=reset;
+$('pause').onclick=e=>{paused=!paused;e.target.textContent=paused?'Resume':'Pause';e.target.classList.toggle('on',paused)};
+$('heat').onclick=()=>{for(let i=0;i<N*3;i++)vel[i]*=1.6};
+$('cool').onclick=()=>{for(let i=0;i<N*3;i++)vel[i]*=.35};
+$('n').oninput=()=>{const rho=N/Math.pow(L-1,3);$('box').value=Math.min(30,Math.max(5,Math.cbrt(+$('n').value/rho)+1)).toFixed(1);reset()};
+$('t').oninput=labels;$('g').oninput=labels;$('sp').oninput=labels;
+$('box').oninput=()=>{const nl=+$('box').value,s=(nl-1)/(L-1);for(let i=0;i<N*3;i++)pos[i]*=s;L=nl;fit();labels()};
+
+// pointer: orbit, pinch zoom, click-to-blast
+const ptrs=new Map();let moved=0,pinch=0;
+cv.addEventListener('pointerdown',e=>{cv.setPointerCapture(e.pointerId);ptrs.set(e.pointerId,[e.clientX,e.clientY]);moved=0;pinch=0});
+cv.addEventListener('pointermove',e=>{
+  if(!ptrs.has(e.pointerId))return;const p=ptrs.get(e.pointerId);
+  if(ptrs.size===1){th-=(e.clientX-p[0])*.007;ph=Math.min(3.0,Math.max(.15,ph-(e.clientY-p[1])*.007));moved+=Math.abs(e.clientX-p[0])+Math.abs(e.clientY-p[1])}
+  ptrs.set(e.pointerId,[e.clientX,e.clientY]);
+  if(ptrs.size===2){const[a,b]=[...ptrs.values()],d=Math.hypot(a[0]-b[0],a[1]-b[1]);if(pinch)dist=Math.min(120,Math.max(6,dist*pinch/d));pinch=d;moved=99}
+});
+cv.addEventListener('pointerup',e=>{
+  if(ptrs.size===1&&moved<5)blast(e.clientX,e.clientY);ptrs.delete(e.pointerId);pinch=0});
+cv.addEventListener('pointercancel',e=>ptrs.delete(e.pointerId));
+cv.addEventListener('wheel',e=>{e.preventDefault();dist=Math.min(120,Math.max(6,dist*(1+e.deltaY*.001)))},{passive:false});
+function blast(cx,cy){
+  const rc=new THREE.Raycaster();rc.setFromCamera(new THREE.Vector2(cx/innerWidth*2-1,-(cy/innerHeight)*2+1),camera);
+  const o=rc.ray.origin,d=rc.ray.direction;let best=-1,bd=1.2;
+  for(let i=0;i<N;i++){const px=pos[3*i]-o.x,py=pos[3*i+1]-o.y,pz=pos[3*i+2]-o.z,t=px*d.x+py*d.y+pz*d.z;if(t<0)continue;
+    const dd=Math.hypot(px-t*d.x,py-t*d.y,pz-t*d.z);if(dd<bd){bd=dd;best=i}}
+  if(best<0)return;const cx0=pos[3*best],cy0=pos[3*best+1],cz0=pos[3*best+2];
+  for(let i=0;i<N;i++){const dx=pos[3*i]-cx0,dy=pos[3*i+1]-cy0,dz=pos[3*i+2]-cz0,r=Math.hypot(dx,dy,dz);
+    if(r<3.2){const k=6/(r+.6)/(r+.6),n=r||1;vel[3*i]+=dx/n*k+(r?0:d.x*4);vel[3*i+1]+=dy/n*k+(r?0:d.y*4);vel[3*i+2]+=dz/n*k+(r?0:d.z*4)}}
+}
+// ---------- main loop ----------
+let fr=0,pAcc=0,pT=0;
+function loop(){
+  requestAnimationFrame(loop);
+  if(!paused){const k=+$('sp').value;for(let s=0;s<k;s++)step()}
+  const{sp,ke}=draw();
+  if(!paused&&simT>0){pAcc+=imp;pT+=simT;imp=0;simT=0;
+    if(pT>2){pressure=pAcc/(pT*6*Math.pow(L-1,2));pAcc=0;pT=0}}
+  if(++fr%6===0){
+    $('sT').textContent=measT.toFixed(3);$('sP').textContent=pressure.toFixed(3);
+    $('sK').textContent=(ke/N).toFixed(3);$('sU').textContent=(U/N).toFixed(3);
+    drawHist(sp);
+  }
+}
+preset(216,.75,.8);
+loop();
+</script>
+</body>
+</html>
